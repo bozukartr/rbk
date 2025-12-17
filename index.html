@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="tr">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Hub - Benim Oyunlarım</title>
+    <meta name="description"
+        content="bozukartr'nin geliştirmiş olduğu web tabanlı oyunlar: Chroma, Quoridor ve Kelime Oyunu.">
+
+    <!-- Open Graph / Facebook -->
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://bozukartr.github.io/">
+    <meta property="og:title" content="Game Hub - Benim Oyunlarım">
+    <meta property="og:description" content="Tüm strateji ve zeka oyunlarım tek bir yerde. Oynamak için tıkla.">
+    <meta property="og:image" content="assets/chroma_logo.png">
+
+    <!-- Twitter -->
+    <meta property="twitter:card" content="summary_large_image">
+    <meta property="twitter:title" content="Game Hub - Benim Oyunlarım">
+    <meta property="twitter:description" content="Tüm strateji ve zeka oyunlarım tek bir yerde.">
+
+    <!-- Favicon -->
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎮</text></svg>">
+    <meta name="description" content="Web tabanlı oyunlarımın koleksiyonu.">
+
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
+
+    <!-- Styles -->
+    <link rel="stylesheet" href="style.css">
+</head>
+
+<body>
+
+    <div class="noise-overlay"></div>
+    <div class="background-blobs">
+        <div class="blob blob-1"></div>
+        <div class="blob blob-2"></div>
+        <div class="blob blob-3"></div>
+    </div>
+
+    <main class="hub-container">
+        <header class="hub-header">
+            <h1>Game Hub</h1>
+            <p>Tüm oyunlarım tek bir yerde.</p>
+        </header>
+
+        <div class="app-grid">
+
+            <!-- Game 1: Chroma -->
+            <a href="https://bozukartr.github.io/chroma/" class="app-card" target="_blank">
+                <div class="badge-new">YENİ</div>
+                <div class="app-icon" id="chroma-icon">
+                    <img src="assets/chroma_logo.png" alt="Chroma Logo"
+                        onerror="this.onerror=null; this.src='https://placehold.co/100x100/252525/FFF?text=C';">
+                </div>
+                <div class="app-info">
+                    <h2>Chroma</h2>
+                    <span class="app-category">Strateji</span>
+                </div>
+            </a>
+
+            <!-- Game 2: Quoridor -->
+            <a href="https://bozukartr.github.io/quoridor/" class="app-card" target="_blank">
+                <div class="app-icon" id="quoridor-icon">
+                    <img src="assets/quoridor_logo.png" alt="Quoridor Logo"
+                        onerror="this.onerror=null; this.src='https://placehold.co/100x100/252525/FFF?text=Q';">
+                </div>
+                <div class="app-info">
+                    <h2>Quoridor</h2>
+                    <span class="app-category">Masa Oyunu</span>
+                </div>
+            </a>
+
+            <!-- Game 3: Wordl Online -->
+            <a href="https://bozukartr.github.io/onlinekelime/" class="app-card" target="_blank">
+                <div class="app-icon" id="wordl-icon">
+                    <img src="assets/onlinekelime_logo.png" alt="Wordl Online Logo"
+                        onerror="this.onerror=null; this.src='https://placehold.co/100x100/252525/FFF?text=W';">
+                </div>
+                <div class="app-info">
+                    <h2>Wordl Online</h2>
+                    <span class="app-category">Kelime</span>
+                </div>
+            </a>
+
+        </div>
+    </main>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
