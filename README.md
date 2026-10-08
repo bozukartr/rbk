@@ -1,12 +1,12 @@
 # Obur Delik 🕳️
 
-Şehri yut, büyü, rakip delikleri yut! Mobil için tasarlanmış, tarayıcıda çalışan 3D bir "hole" oyunu.
+Şehri yut, büyü, her şeyi deliğe çek! Mobil için tasarlanmış, tarayıcıda çalışan 3D bir "hole" oyunu.
 
 **Oyna:** `index.html` dosyasını herhangi bir statik sunucuda aç (ör. GitHub Pages). Telefonda “Ana ekrana ekle” ile tam ekran uygulama gibi çalışır, çevrimdışı da açılır.
 
 ## Modlar
-- **Arena** – 8 delik, 2 dakika. Küçükleri yut, büyüklerden kaç. En yüksek puan kazanır.
-- **Solo** – 2 dakikada şehrin yüzde kaçını yutabilirsin? (1–3 yıldız)
+- **Süreli** – 2 dakikada şehrin ne kadarını yutabilirsin? %8 / %18 / %30 için 1–3 yıldız.
+- **Sonsuz** – Süre yok. Şehrin %80'ini yutunca yeni bir şehre geçersin, puanın birikir. Duraklat → “Bitir ve kaydet”.
 
 ## Kontroller
 - **Dokunmatik:** ekranın herhangi bir yerine dokun ve sürükle (yüzen joystick).
@@ -18,6 +18,7 @@
 - 65+ prosedürel low-poly asset (insanlar, araçlar, ağaçlar, binalar, sokak eşyaları…), her tür tek bir `InstancedMesh` çağrısında çizilir.
 - Kare başına frustum culling + instance sıkıştırma: yalnızca ekrandaki nesneler GPU'ya gönderilir.
 - Deliğin zemini “kesmesi” stencil buffer ile yapılır; FPS düşerse çözünürlük otomatik azaltılır.
+- Düşüş fiziği: nesneler kenardan devrilir, takla atar, delik duvarına çarpıp seker ve derine indikçe kararır. Sığmayan büyük nesneler kenarda titrer.
 - Çift dokunma / pinch zoom, uzun basma menüsü, çekerek yenileme engellidir; PWA manifesti ve service worker ile çevrimdışı çalışır.
 - Ses efektleri WebAudio ile sentezlenir, Android'de titreşim geri bildirimi vardır.
 

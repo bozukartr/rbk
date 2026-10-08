@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { buildAssets, ASSETS, makeWindowTexture, makeShadowTexture } from './assets.js';
-import { generateCity, HALF, SIZE } from './world.js';
+import { generateCity, roadCenter, N_BLOCKS, HALF, SIZE } from './world.js';
 import * as SFX from './audio.js';
 import { input, initInput, pollKeys, resetInput, lockBrowserGestures } from './input.js';
 
@@ -8,12 +8,12 @@ import { input, initInput, pollKeys, resetInput, lockBrowserGestures } from './i
 // Config
 // ---------------------------------------------------------------------------
 const ROUND_TIME = 120;
-const BOT_COUNT = 7;
-const START_MASS = 0;
+const CITY_GOAL = 0.8; // endless: share of the city's value to clear before moving on
+const STAR_PCT = [8, 18, 30]; // timed: % of the city for 1 / 2 / 3 stars
+const GRAVITY = 30;
 const CELL = 8;
 const GRID_N = Math.ceil(SIZE / CELL) + 2;
 const SKINS = ['#00e5ff', '#ff3d7f', '#ffd600', '#76ff03', '#b388ff', '#ff9100', '#ffffff', '#1de9b6', '#ff1744', '#2979ff'];
-const BOT_NAMES = ['Girdap', 'Vakum', 'Kara Delik', 'Hortum', 'Mıknatıs', 'Tsunami', 'Kaos', 'Obur', 'Nebula', 'Tayfun', 'Pacman', 'Kasırga', 'Gölge', 'Kuyu', 'Anafor'];
 const QUALITY = [
   { name: 'Düşük', pr: 1, aa: false },
   { name: 'Orta', pr: 1.5, aa: true },
@@ -30,7 +30,7 @@ const tap = (el, fn) => {
   el.addEventListener('pointerup', e => { e.preventDefault(); SFX.unlockAudio(); SFX.sfxClick(); fn(e); });
 };
 
-function radiusFor(mass) { return 1.25 + 0.12 * Math.sqrt(mass); }
+function radiusFor(mass) { return 1.3 + 0.095 * Math.sqrt(mass); }
 function levelFor(mass) { return Math.floor(Math.sqrt(mass / 6)) + 1; }
 function levelMass(lv) { return (lv - 1) * (lv - 1) * 6; }
 
@@ -63,7 +63,7 @@ const winTex = makeWindowTexture();
 const matColor = new THREE.MeshLambertMaterial({ vertexColors: true });
 const matWin = new THREE.MeshLambertMaterial({ vertexColors: true, map: winTex });
 
-// Stencil: holes write 1, ground & flat decals skip pixels where stencil == 1.
+// Stencil: the hole writes 1, ground & flat decals skip pixels where stencil == 1.
 const stencilSkip = { stencilWrite: true, stencilRef: 1, stencilFunc: THREE.NotEqualStencilFunc, stencilFail: THREE.KeepStencilOp, stencilZFail: THREE.KeepStencilOp, stencilZPass: THREE.KeepStencilOp };
 const groundTex = (() => {
   const c = document.createElement('canvas'); c.width = c.height = 128;
@@ -87,7 +87,7 @@ const shadowMats = ['c', 's'].map(k => new THREE.MeshBasicMaterial({
 const SHADOW_GEO = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
 
 // ---------------------------------------------------------------------------
-// Instance pools (swap-remove keeps draw counts tight as objects get eaten)
+// Instance pools
 // ---------------------------------------------------------------------------
 const _mat4 = new THREE.Matrix4();
 const _col = new THREE.Color();
@@ -97,7 +97,8 @@ let visFrame = 0;
 
 // Instances live in a CPU-side master list; every frame only the ones inside the
 // camera frustum are packed into the GPU buffer, so the vertex load scales with
-// what is on screen rather than with the whole city.
+// what is on screen rather than with the whole city. Falling objects are shaded
+// darker the deeper they sink, via the per-instance colour.
 class Pool {
   constructor(geo, material, cap, key, tinted) {
     cap = Math.max(1, cap);
@@ -132,7 +133,7 @@ class Pool {
     this.owners[last] = null;
     if (gone) gone[this.key] = -1;
   }
-  // shadows: reuse the visibility the object pass computed this frame
+  // useVis: shadows reuse the visibility the object pass computed this frame
   compact(useVis) {
     const src = this.mats, dst = this.mesh.instanceMatrix.array, cs = this.cols;
     const cd = cs ? this.mesh.instanceColor.array : null;
@@ -155,7 +156,10 @@ class Pool {
       if (!vis) continue;
       const si = k * 16, di = c * 16;
       for (let q = 0; q < 16; q++) dst[di + q] = src[si + q];
-      if (cs) { cd[c * 3] = cs[k * 3]; cd[c * 3 + 1] = cs[k * 3 + 1]; cd[c * 3 + 2] = cs[k * 3 + 2]; }
+      if (cs) {
+        const sh = o.falling ? o.shade : 1;
+        cd[c * 3] = cs[k * 3] * sh; cd[c * 3 + 1] = cs[k * 3 + 1] * sh; cd[c * 3 + 2] = cs[k * 3 + 2] * sh;
+      }
       c++;
     }
     this.mesh.count = c;
@@ -186,6 +190,7 @@ let movers = [];
 let grid = [];
 let groundMesh = null;
 let totalValue = 1;
+const wobbling = new Set();
 
 const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3(), _ax = new THREE.Vector3();
 const _q2 = new THREE.Quaternion(), _up = new THREE.Vector3(0, 1, 0);
@@ -235,7 +240,7 @@ function buildWorld(seed) {
     const a = ASSETS[type];
     let mat = matColor;
     if (a.geo.userData.multiMat) mat = a.geo.userData.onlyMat === 1 ? matWin : [matColor, matWin];
-    pools[type] = new Pool(a.geo, mat, n, 'slot', a.tint);
+    pools[type] = new Pool(a.geo, mat, n, 'slot', true);
     worldGroup.add(pools[type].mesh);
   }
   let nc = 0, ns = 0;
@@ -246,9 +251,11 @@ function buildWorld(seed) {
 
   grid = Array.from({ length: GRID_N * GRID_N }, () => []);
   movers = [];
+  falling.length = 0;
+  wobbling.clear();
   totalValue = 0;
   for (const o of objects) {
-    o.alive = true; o.falling = false; o.y = 0; o.vis = 0;
+    o.alive = true; o.falling = false; o.y = 0; o.vis = 0; o.wob = 0; o.shade = 1;
     o.cullR = Math.max(o.bound, o.h * 0.5) + 0.6;
     if (o.mover) { stepMover(o, 0); movers.push(o); } else { o.cell = cellOf(o.x, o.z); grid[o.cell].push(o); }
     pools[o.type].add(o, objMatrix(o, _mat4), o.tint !== null ? _col.set(o.tint) : null);
@@ -290,7 +297,7 @@ function stepMover(o, dt) {
     m.wait = Math.random() * 3;
     return;
   }
-  const s = Math.min(d, m.speed * (m.panic > 0 ? 2.6 : 1) * dt);
+  const s = Math.min(d, m.speed * (m.panic > 0 ? 1.8 : 1) * dt);
   o.x += dx / d * s; o.z += dz / d * s;
   o.rot = Math.atan2(dx, dz);
   o.y = Math.abs(Math.sin(performance.now() * 0.012 + o.x)) * 0.08;
@@ -298,18 +305,18 @@ function stepMover(o, dt) {
 }
 
 // ---------------------------------------------------------------------------
-// Holes
+// The hole
 // ---------------------------------------------------------------------------
-const STENCIL_GEO = new THREE.CircleGeometry(1, 48).rotateX(-Math.PI / 2);
+const STENCIL_GEO = new THREE.CircleGeometry(1, 56).rotateX(-Math.PI / 2);
 const RIM_GEO = new THREE.RingGeometry(1, 1.08, 64).rotateX(-Math.PI / 2);
 const GLOW_GEO = new THREE.RingGeometry(1.06, 1.32, 64).rotateX(-Math.PI / 2);
 const WALL_GEO = (() => {
-  const g = new THREE.CylinderGeometry(1, 1, 1, 40, 4, true).translate(0, -0.5, 0);
+  const g = new THREE.CylinderGeometry(1, 1, 1, 48, 8, true).translate(0, -0.5, 0);
   const pos = g.attributes.position;
   const col = new Float32Array(pos.count * 3);
-  const top = new THREE.Color(0x2a2f45), bot = new THREE.Color(0x000000);
+  const top = new THREE.Color(0x343a58), bot = new THREE.Color(0x000000);
   for (let i = 0; i < pos.count; i++) {
-    const t = Math.pow(Math.min(1, -pos.getY(i) * 2.2), 0.6);
+    const t = Math.pow(Math.min(1, -pos.getY(i) * 1.5), 0.7);
     _col.copy(top).lerp(bot, t);
     col[i * 3] = _col.r; col[i * 3 + 1] = _col.g; col[i * 3 + 2] = _col.b;
   }
@@ -325,283 +332,235 @@ const matWall = new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.Ba
 const matBottom = new THREE.MeshBasicMaterial({ color: 0x000000, fog: false });
 
 class Hole {
-  constructor(name, color, isPlayer) {
-    this.name = name;
-    this.color = color;
-    this.isPlayer = isPlayer;
+  constructor(color) {
     this.group = new THREE.Group();
     const st = new THREE.Mesh(STENCIL_GEO, matStencil); st.renderOrder = -10;
     this.rimMat = new THREE.MeshBasicMaterial({ color, fog: false });
     this.glowMat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.28, depthWrite: false, fog: false });
     const rim = new THREE.Mesh(RIM_GEO, this.rimMat); rim.position.y = 0.09;
-    const glow = new THREE.Mesh(GLOW_GEO, this.glowMat); glow.position.y = 0.085; glow.renderOrder = 2;
+    this.glow = new THREE.Mesh(GLOW_GEO, this.glowMat); this.glow.position.y = 0.085; this.glow.renderOrder = 2;
     this.inner = new THREE.Group();
     this.inner.add(new THREE.Mesh(WALL_GEO, matWall));
     const bottom = new THREE.Mesh(BOTTOM_GEO, matBottom); bottom.position.y = -1;
     this.inner.add(bottom);
     this.flat = new THREE.Group();
-    this.flat.add(st, rim, glow);
+    this.flat.add(st, rim, this.glow);
     this.group.add(this.flat, this.inner);
     scene.add(this.group);
-    this.label = document.createElement('div');
-    this.label.className = 'hole-label' + (isPlayer ? ' me' : '');
-    this.label.innerHTML = `<span class="crown">👑</span><span class="nm"></span>`;
-    this.label.querySelector('.nm').textContent = name;
-    this.label.style.setProperty('--c', color);
-    $('labels').appendChild(this.label);
-    this.skill = isPlayer ? 1 : 0.74 + Math.random() * 0.2;
     this.reset(0, 0);
-    this.score = 0;
   }
   reset(x, z) {
     this.x = x; this.z = z; this.vx = 0; this.vz = 0;
-    this.mass = START_MASS; this.r = radiusFor(this.mass);
-    this.alive = true; this.respawn = 0; this.invuln = 2.5;
-    this.ai = { t: 0, tx: x, tz: z, target: null, wobble: Math.random() * 10 };
-    this.level = levelFor(this.mass);
-    this.kills = 0;
-    this.group.visible = true;
+    this.mass = 0; this.r = radiusFor(0);
+    this.level = 1; this.pulse = 0;
   }
-  get depth() { return 3 + this.r * 3.5; }
+  get depth() { return 6 + this.r * 4.5; }
   sync(dt) {
     const target = radiusFor(this.mass);
     this.r += (target - this.r) * Math.min(1, dt * 4);
     this.group.position.set(this.x, 0, this.z);
     this.flat.scale.set(this.r, 1, this.r);
     this.inner.scale.set(this.r, this.depth, this.r);
-    if (this.invuln > 0) {
-      this.invuln -= dt;
-      this.rimMat.opacity = 1;
-      this.flat.children[1].visible = Math.floor(this.invuln * 8) % 2 === 0 || this.invuln <= 0;
-    } else this.flat.children[1].visible = true;
+    // rim glow swells briefly whenever something drops in
+    this.pulse = Math.max(0, this.pulse - dt * 3);
+    const g = 1 + this.pulse * 0.25;
+    this.glow.scale.set(g, 1, g);
+    this.glowMat.opacity = 0.28 + this.pulse * 0.35;
   }
   dispose() {
     scene.remove(this.group);
-    this.label.remove();
     this.rimMat.dispose(); this.glowMat.dispose();
   }
 }
 
-let holes = [];
 let player = null;
 const falling = [];
 
+// Falling objects are simulated in world space: they tip over the rim toward the
+// centre, tumble, bounce off the hole's wall (which drags them along when the
+// hole moves) and darken as they sink before being removed near the bottom.
 function startFall(o, h) {
   o.falling = true;
-  o.eater = h;
-  o.fx = o.x - h.x; o.fz = o.z - h.z;
-  o.vy = 0; o.tilt = 0; o.ft = 0;
-  const d = Math.hypot(o.fx, o.fz) || 1;
-  o.ax = -o.fz / d; o.az = o.fx / d; // tilt axis = up x dirToCentre
-  o.ax = (-o.fz / d); o.az = (o.fx / d);
-  o.tiltSpeed = 2.5 + Math.random() * 2;
-  o.spin = (Math.random() - 0.5) * 3;
+  const dx = o.x - h.x, dz = o.z - h.z;
+  const d = Math.hypot(dx, dz) || 0.001;
+  const nx = -dx / d, nz = -dz / d; // toward the centre
+  const edge = Math.min(1, d / h.r);
+  o.vx = h.vx * 0.6 + nx * (0.8 + edge * 1.6);
+  o.vz = h.vz * 0.6 + nz * (0.8 + edge * 1.6);
+  o.vy = 0;
+  if (!o.q) o.q = new THREE.Quaternion();
+  o.q.setFromAxisAngle(_up, o.rot);
+  // tip toward the centre (axis = up × n), faster for things caught at the edge
+  const tip = (1.2 + edge * 2.4 + Math.random() * 0.8) * (1.4 / (1 + o.h * 0.08));
+  o.wx = nz * tip + (Math.random() - 0.5) * 0.8;
+  o.wy = (Math.random() - 0.5) * 2;
+  o.wz = -nx * tip + (Math.random() - 0.5) * 0.8;
+  o.ft = 0; o.shade = 1; o.hitWall = 0;
+  if (o.wob) { o.wob = 0; wobbling.delete(o); }
   if (o.mover) { const i = movers.indexOf(o); if (i >= 0) { movers[i] = movers[movers.length - 1]; movers.pop(); } }
   else { const c = grid[o.cell]; const i = c.indexOf(o); if (i >= 0) { c[i] = c[c.length - 1]; c.pop(); } }
   shadowPools[ASSETS[o.type].shadow].remove(o.sslot);
   falling.push(o);
   h.mass += o.value;
-  h.score += o.value;
-  if (h.isPlayer) {
-    eatenValue += o.value;
-    SFX.sfxEat(o.fit);
-    if (o.fit > 2) SFX.haptic(Math.min(40, 8 + o.fit * 4));
-    popupAccum += o.value;
-  }
+  score += o.value;
+  eatenValue += o.value;
+  h.pulse = Math.min(1, h.pulse + 0.15 + o.fit * 0.08);
+  SFX.sfxEat(o.fit);
+  if (o.fit > 2) SFX.haptic(Math.min(40, 8 + o.fit * 4));
+  popupAccum += o.value;
 }
 
 function updateFalling(dt) {
+  const h = player;
+  const depth = h.depth;
   for (let i = falling.length - 1; i >= 0; i--) {
     const o = falling[i];
-    const h = o.eater;
     o.ft += dt;
-    // drift toward the hole centre so things drop cleanly inside the rim
-    const pull = Math.min(1, dt * 2.5);
-    const maxOff = Math.max(0, h.r - o.bound * 0.5);
-    const d = Math.hypot(o.fx, o.fz);
-    if (d > maxOff) { o.fx *= 1 - pull; o.fz *= 1 - pull; } else { o.fx *= 1 - pull * 0.3; o.fz *= 1 - pull * 0.3; }
-    o.vy -= 32 * dt;
-    o.y += o.vy * dt;
-    o.tilt = Math.min(1.5, o.tilt + o.tiltSpeed * dt);
-    o.rot += o.spin * dt;
-    const done = o.y < -h.depth - o.h || o.ft > 3 || !h.alive;
-    if (done) {
+    // gravity ramps in over the first moments so objects visibly tip before dropping
+    const g = GRAVITY * Math.min(1, 0.35 + o.ft * 2.2);
+    o.vy -= g * dt;
+    const drag = 1 - Math.min(1, dt * 1.2);
+    o.vx *= drag; o.vz *= drag;
+    o.x += o.vx * dt; o.y += o.vy * dt; o.z += o.vz * dt;
+
+    // soft wall: keep the body inside the hole's cylinder, bounce off it
+    const dx = o.x - h.x, dz = o.z - h.z;
+    const d = Math.hypot(dx, dz) || 0.001;
+    const maxD = Math.max(0, h.r - o.bound * 0.5 - 0.1);
+    if (d > maxD) {
+      const ex = d - maxD;
+      const k = Math.min(1, dt * 10 + (o.y < -0.5 ? 0.25 : 0));
+      o.x -= dx / d * ex * k; o.z -= dz / d * ex * k;
+      const rvx = o.vx - h.vx, rvz = o.vz - h.vz;
+      const radial = (rvx * dx + rvz * dz) / d;
+      if (radial > 0) {
+        o.vx -= 1.5 * radial * dx / d; o.vz -= 1.5 * radial * dz / d;
+        // a knock against the wall adds tumble
+        o.wx += dz / d * radial * 0.6; o.wz -= dx / d * radial * 0.6;
+        if (o.y < -1 && radial > 2 && o.hitWall <= 0) { o.hitWall = 0.3; SFX.sfxBump(o.fit); }
+      }
+    }
+    if (o.hitWall > 0) o.hitWall -= dt;
+
+    // rotation
+    const wl = Math.hypot(o.wx, o.wy, o.wz);
+    if (wl > 7) { const k = 7 / wl; o.wx *= k; o.wy *= k; o.wz *= k; }
+    if (wl > 1e-4) {
+      _ax.set(o.wx / wl, o.wy / wl, o.wz / wl);
+      _q2.setFromAxisAngle(_ax, wl * dt);
+      o.q.premultiply(_q2);
+    }
+
+    o.shade = Math.max(0.03, Math.min(1, 1 + (o.y + o.h * 0.25) / (depth * 0.6)));
+    if (o.y < -depth * 0.95 - o.h * 0.5 || o.ft > 5) {
+      if (o.fit > 1.5) SFX.sfxThud(o.fit);
       pools[o.type].remove(o.slot);
       o.alive = false; o.falling = false;
       falling[i] = falling[falling.length - 1]; falling.pop();
       continue;
     }
-    _ax.set(o.ax, 0, o.az);
-    _q.setFromAxisAngle(_ax, -o.tilt);
+    _p.set(o.x, o.y, o.z);
+    _s.set(o.scale, o.scale, o.scale);
+    pools[o.type].set(o.slot, _mat4.compose(_p, o.q, _s));
+  }
+}
+
+// Too-big objects shake at the rim so the player sees they don't fit yet.
+function wobble(o, h) {
+  if (!o.wob) wobbling.add(o);
+  o.wob = 0.25;
+  o.wobX = h.x; o.wobZ = h.z;
+}
+function updateWobble(dt, t) {
+  for (const o of wobbling) {
+    o.wob -= dt;
+    if (o.wob <= 0 || !o.alive || o.falling) {
+      o.wob = 0; wobbling.delete(o);
+      if (o.alive && !o.falling) pools[o.type].set(o.slot, objMatrix(o, _mat4));
+      continue;
+    }
+    const dx = o.wobX - o.x, dz = o.wobZ - o.z, d = Math.hypot(dx, dz) || 1;
+    const amp = (0.035 + Math.sin(t * 28 + o.x) * 0.025) * Math.min(1, o.wob * 6);
+    _ax.set(dz / d, 0, -dx / d);
+    _q.setFromAxisAngle(_ax, amp);
     _q2.setFromAxisAngle(_up, o.rot);
     _q.multiply(_q2);
-    _p.set(h.x + o.fx, o.y, h.z + o.fz);
+    _p.set(o.x, 0, o.z);
     _s.set(o.scale, o.scale, o.scale);
     pools[o.type].set(o.slot, _mat4.compose(_p, _q, _s));
   }
 }
 
 function eatCheck(h) {
-  const r = h.r, lim = r * 0.95;
-  const c0x = Math.floor((h.x - r + HALF) / CELL) + 1, c1x = Math.floor((h.x + r + HALF) / CELL) + 1;
-  const c0z = Math.floor((h.z - r + HALF) / CELL) + 1, c1z = Math.floor((h.z + r + HALF) / CELL) + 1;
+  const r = h.r, lim = r * 0.97;
+  const reach = r + 4;
+  const c0x = Math.floor((h.x - reach + HALF) / CELL) + 1, c1x = Math.floor((h.x + reach + HALF) / CELL) + 1;
+  const c0z = Math.floor((h.z - reach + HALF) / CELL) + 1, c1z = Math.floor((h.z + reach + HALF) / CELL) + 1;
   for (let cz = Math.max(0, c0z); cz <= Math.min(GRID_N - 1, c1z); cz++) {
     for (let cx = Math.max(0, c0x); cx <= Math.min(GRID_N - 1, c1x); cx++) {
       const cell = grid[cz * GRID_N + cx];
       for (let k = cell.length - 1; k >= 0; k--) {
         const o = cell[k];
-        if (o.fit >= lim) continue;
-        const dx = o.x - h.x, dz = o.z - h.z, rr = r - o.fit * 0.35;
-        if (dx * dx + dz * dz < rr * rr) startFall(o, h);
+        const dx = o.x - h.x, dz = o.z - h.z, d2 = dx * dx + dz * dz;
+        if (o.fit < lim) {
+          const rr = r - o.fit * 0.2;
+          if (d2 < rr * rr) startFall(o, h);
+        } else {
+          const near = r + o.bound * 0.35;
+          if (d2 < near * near) wobble(o, h);
+        }
       }
     }
   }
   for (let k = movers.length - 1; k >= 0; k--) {
     const o = movers[k];
-    if (o.fit >= lim) continue;
-    const dx = o.x - h.x, dz = o.z - h.z, rr = r - o.fit * 0.35;
+    const dx = o.x - h.x, dz = o.z - h.z;
+    if (Math.abs(dx) > reach || Math.abs(dz) > reach) continue;
     const d2 = dx * dx + dz * dz;
-    if (d2 < rr * rr) startFall(o, h);
-    else if (o.mover.kind === 'wander' && d2 < (r + 5) * (r + 5)) o.mover.panic = 1.5, o.mover.tx = o.x + dx * 3, o.mover.tz = o.z + dz * 3, o.mover.wait = 0;
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Bot AI
-// ---------------------------------------------------------------------------
-function botThink(h) {
-  const ai = h.ai;
-  ai.t = 0.35 + Math.random() * 0.35;
-  let fx = 0, fz = 0, threat = false;
-  let preyHole = null, preyD = 1e9;
-  for (const o of holes) {
-    if (o === h || !o.alive) continue;
-    const d = Math.hypot(o.x - h.x, o.z - h.z);
-    if (o.r > h.r * 1.12 && d < o.r + 16 && h.invuln <= 0) {
-      fx += (h.x - o.x) / (d + 0.1); fz += (h.z - o.z) / (d + 0.1); threat = true;
-    } else if (h.r > o.r * 1.2 && o.invuln <= 0 && d < 28 && d < preyD) { preyHole = o; preyD = d; }
-  }
-  if (threat) {
-    const l = Math.hypot(fx, fz) || 1;
-    ai.tx = h.x + fx / l * 20; ai.tz = h.z + fz / l * 20; ai.target = null;
-    return;
-  }
-  if (preyHole && Math.random() < 0.8) { ai.target = preyHole; return; }
-  ai.target = null;
-  // pick the most rewarding reachable prop nearby
-  const lim = h.r * 0.93;
-  const R = 26;
-  let best = null, bestS = 0;
-  const c0x = Math.floor((h.x - R + HALF) / CELL) + 1, c1x = Math.floor((h.x + R + HALF) / CELL) + 1;
-  const c0z = Math.floor((h.z - R + HALF) / CELL) + 1, c1z = Math.floor((h.z + R + HALF) / CELL) + 1;
-  for (let cz = Math.max(0, c0z); cz <= Math.min(GRID_N - 1, c1z); cz += 1) {
-    for (let cx = Math.max(0, c0x); cx <= Math.min(GRID_N - 1, c1x); cx += 1) {
-      const cell = grid[cz * GRID_N + cx];
-      if (!cell.length) continue;
-      // score the whole cell: sum of edible value, aim at its richest item
-      let sum = 0, item = null, iv = 0;
-      for (const o of cell) if (o.fit < lim) { sum += o.value; if (o.value > iv) { iv = o.value; item = o; } }
-      if (!item) continue;
-      const d = Math.hypot(item.x - h.x, item.z - h.z);
-      const s = sum / (d + 6) * (0.75 + Math.random() * 0.5);
-      if (s > bestS) { bestS = s; best = item; }
+    if (o.fit < lim) {
+      const rr = r - o.fit * 0.2;
+      if (d2 < rr * rr) { startFall(o, h); continue; }
+    }
+    if (o.mover.kind === 'wander' && o.fit < lim && d2 < (r + 3) * (r + 3) && !(o.mover.panic > 0)) {
+      o.mover.panic = 1.2; o.mover.tx = o.x + dx * 2; o.mover.tz = o.z + dz * 2; o.mover.wait = 0;
     }
   }
-  if (best && Math.random() < h.skill + 0.05) { ai.tx = best.x; ai.tz = best.z; }
-  else if (Math.random() < 0.5 || Math.hypot(ai.tx - h.x, ai.tz - h.z) < 3) {
-    ai.tx = (Math.random() - 0.5) * SIZE * 0.85; ai.tz = (Math.random() - 0.5) * SIZE * 0.85;
-  }
 }
 
-function holeSpeed(h) { return 7.2 + h.r * 0.95; }
+function holeSpeed(h) { return 8.5 + h.r * 1.15; }
 
 function moveHole(h, dx, dz, mag, dt) {
   const sp = holeSpeed(h) * mag;
-  const k = Math.min(1, dt * 9);
+  // snappy acceleration, slightly softer stop so it never feels like hitting a wall
+  const k = Math.min(1, dt * (mag > 0.05 ? 12 : 8));
   h.vx += (dx * sp - h.vx) * k;
   h.vz += (dz * sp - h.vz) * k;
   h.x += h.vx * dt; h.z += h.vz * dt;
   const lim = HALF - 1.5;
-  h.x = Math.max(-lim, Math.min(lim, h.x));
-  h.z = Math.max(-lim, Math.min(lim, h.z));
-}
-
-function updateBot(h, dt) {
-  const ai = h.ai;
-  ai.t -= dt;
-  if (ai.t <= 0) botThink(h);
-  if (ai.target) {
-    if (!ai.target.alive || ai.target.r * 1.2 > h.r) ai.target = null;
-    else { ai.tx = ai.target.x; ai.tz = ai.target.z; }
-  }
-  let dx = ai.tx - h.x, dz = ai.tz - h.z;
-  const d = Math.hypot(dx, dz);
-  ai.wobble += dt;
-  if (d > 0.3) {
-    dx /= d; dz /= d;
-    const w = Math.sin(ai.wobble * 1.7) * 0.25;
-    const cx = dx * Math.cos(w) - dz * Math.sin(w), cz = dx * Math.sin(w) + dz * Math.cos(w);
-    moveHole(h, cx, cz, Math.min(1, d / 2) * h.skill, dt);
-  } else moveHole(h, 0, 0, 0, dt);
-}
-
-function holeVsHole() {
-  for (const a of holes) {
-    if (!a.alive) continue;
-    for (const b of holes) {
-      if (a === b || !b.alive || b.invuln > 0 || a.r < b.r * 1.15) continue;
-      const d = Math.hypot(a.x - b.x, a.z - b.z);
-      if (d < a.r - b.r * 0.4) eatHole(a, b);
-    }
-  }
-}
-
-function eatHole(a, b) {
-  b.alive = false;
-  b.respawn = 3;
-  b.group.visible = false;
-  const gain = Math.round(b.mass * 0.5) + 30;
-  a.mass += gain;
-  a.score += Math.round(b.score * 0.25) + 50;
-  a.kills++;
-  b.mass = Math.round(b.mass * 0.4);
-  feed(`<b style="color:${a.color}">${esc(a.name)}</b> ➜ <b style="color:${b.color}">${esc(b.name)}</b>'ı yuttu!`);
-  if (a.isPlayer) { SFX.sfxGulpHole(); SFX.haptic(60); popupAccum += Math.round(b.score * 0.25) + 50; }
-  if (b.isPlayer) { SFX.sfxGulpHole(); SFX.haptic([80, 60, 80]); showEaten(a.name); }
-}
-
-function respawnHole(h) {
-  let best = null, bestD = -1;
-  for (let i = 0; i < 12; i++) {
-    const x = (Math.random() - 0.5) * SIZE * 0.85, z = (Math.random() - 0.5) * SIZE * 0.85;
-    let md = 1e9;
-    for (const o of holes) if (o !== h && o.alive) md = Math.min(md, Math.hypot(o.x - x, o.z - z) - o.r);
-    if (md > bestD) { bestD = md; best = [x, z]; }
-  }
-  const m = h.mass;
-  h.reset(best[0], best[1]);
-  h.mass = m;
-  h.r = radiusFor(m);
-  h.level = levelFor(m);
+  if (h.x < -lim || h.x > lim) { h.x = Math.max(-lim, Math.min(lim, h.x)); h.vx = 0; }
+  if (h.z < -lim || h.z > lim) { h.z = Math.max(-lim, Math.min(lim, h.z)); h.vz = 0; }
 }
 
 // ---------------------------------------------------------------------------
 // UI
 // ---------------------------------------------------------------------------
-const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 let state = 'menu';
-let mode = 'arena';
+let mode = 'timed';
 let timeLeft = ROUND_TIME;
+let elapsed = 0;
+let score = 0;
 let eatenValue = 0;
+let cityNum = 1;
+let citiesDone = 0;
+let transition = 0;
 let popupAccum = 0, popupTimer = 0;
 let hudTimer = 0;
 let lastTick = -1;
 
-const screens = ['menu', 'hud', 'pause', 'over', 'countdown', 'eaten'];
+const screens = ['menu', 'hud', 'pause', 'over', 'countdown'];
 function show(...ids) { for (const s of screens) $(s).classList.toggle('hidden', !ids.includes(s)); }
 
 let skin = store.get('skin', 0);
-let playerName = store.get('name', '');
 SFX.setSound(store.get('sound', true));
 
 function buildMenu() {
@@ -614,25 +573,10 @@ function buildMenu() {
     tap(b, () => { skin = i; store.set('skin', i); wrap.querySelectorAll('.skin').forEach((el, k) => el.classList.toggle('sel', k === i)); });
     wrap.appendChild(b);
   });
-  $('name').value = playerName;
-  $('best-arena').textContent = store.get('best_arena', 0);
-  $('best-solo').textContent = store.get('best_solo', 0);
+  $('best-timed').textContent = store.get('best_timed', 0);
+  $('best-endless').textContent = store.get('best_endless', 0);
   $('btn-sound').textContent = SFX.soundOn() ? '🔊' : '🔇';
   $('btn-quality').textContent = '⚙️ ' + QUALITY[quality].name;
-}
-
-function feed(html) {
-  const el = document.createElement('div');
-  el.className = 'feed-item';
-  el.innerHTML = html;
-  $('feed').prepend(el);
-  setTimeout(() => el.remove(), 3200);
-  while ($('feed').children.length > 3) $('feed').lastChild.remove();
-}
-
-function showEaten(by) {
-  $('eaten-by').textContent = by;
-  $('eaten').classList.remove('hidden');
 }
 
 const popups = [];
@@ -662,41 +606,39 @@ function banner(text) {
 const _proj = new THREE.Vector3();
 function toScreen(x, y, z) {
   _proj.set(x, y, z).project(camera);
-  return [(_proj.x * 0.5 + 0.5) * innerWidth, (-_proj.y * 0.5 + 0.5) * innerHeight, _proj.z < 1];
+  return [(_proj.x * 0.5 + 0.5) * innerWidth, (-_proj.y * 0.5 + 0.5) * innerHeight];
 }
 
-function updateLabels() {
-  let leader = null;
-  for (const h of holes) if (h.alive && (!leader || h.score > leader.score)) leader = h;
-  for (const h of holes) {
-    if (!h.alive || state === 'menu') { h.label.style.display = 'none'; continue; }
-    const [x, y, vis] = toScreen(h.x, 0, h.z + h.r * 1.05);
-    if (!vis || x < -100 || x > innerWidth + 100 || y < -50 || y > innerHeight + 50) { h.label.style.display = 'none'; continue; }
-    h.label.style.display = 'block';
-    h.label.style.transform = `translate3d(${x}px, ${y}px, 0) translate(-50%, 0)`;
-    h.label.classList.toggle('lead', h === leader && mode === 'arena');
-  }
-}
+const fmtTime = t => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+const cityPct = () => eatenValue / totalValue * 100;
+function starsFor(pct) { return STAR_PCT.filter(p => pct >= p).length; }
 
 function updateHud() {
-  const t = Math.max(0, Math.ceil(timeLeft));
-  $('timer').textContent = `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
-  $('timer').classList.toggle('warn', t <= 10);
-  $('score').textContent = player.score;
+  if (mode === 'timed') {
+    const t = Math.max(0, Math.ceil(timeLeft));
+    $('timer').textContent = fmtTime(t);
+    $('timer').classList.toggle('warn', t <= 10);
+  } else {
+    $('timer').textContent = '🏙️ ' + cityNum;
+    $('timer').classList.remove('warn');
+  }
+  $('score').textContent = score;
   const lv = levelFor(player.mass);
   const a = levelMass(lv), b = levelMass(lv + 1);
   $('level').textContent = 'Lv ' + lv;
   $('lvbar').style.width = ((player.mass - a) / (b - a) * 100).toFixed(1) + '%';
-  if (mode === 'arena') {
-    const sorted = holes.slice().sort((p, q) => q.score - p.score);
-    const rank = sorted.indexOf(player) + 1;
-    const rows = sorted.slice(0, 5).map((h, i) =>
-      `<li class="${h.isPlayer ? 'me' : ''}"><span class="rk">${i + 1}</span><i style="background:${h.color}"></i><span class="nm">${esc(h.name)}</span><span class="sc">${h.score}</span></li>`);
-    if (rank > 5) rows.push(`<li class="me"><span class="rk">${rank}</span><i style="background:${player.color}"></i><span class="nm">${esc(player.name)}</span><span class="sc">${player.score}</span></li>`);
-    $('board').innerHTML = rows.join('');
+
+  const pct = cityPct();
+  if (mode === 'timed') {
+    const s = starsFor(pct);
+    $('prog-label').textContent = `Şehir %${pct.toFixed(1)}`;
+    $('prog-stars').textContent = '★'.repeat(s) + '☆'.repeat(3 - s);
+    $('prog-bar').style.width = Math.min(100, pct / STAR_PCT[2] * 100).toFixed(1) + '%';
   } else {
-    const pct = eatenValue / totalValue * 100;
-    $('board').innerHTML = `<li class="me solo"><span class="nm">Şehir yutuldu</span><span class="sc">%${pct.toFixed(1)}</span></li>`;
+    const goal = CITY_GOAL * 100;
+    $('prog-label').textContent = `Şehir %${pct.toFixed(0)} / %${goal}`;
+    $('prog-stars').textContent = fmtTime(elapsed);
+    $('prog-bar').style.width = Math.min(100, pct / goal * 100).toFixed(1) + '%';
   }
 }
 
@@ -705,86 +647,90 @@ function updateHud() {
 // ---------------------------------------------------------------------------
 let countdown = 0;
 
+function newCity(keepScore) {
+  buildWorld((Math.random() * 1e9) | 0);
+  if (!player) player = new Hole(SKINS[skin]);
+  // spawn on a road intersection near the middle so the hole never starts under a building
+  const pickRoad = () => roadCenter(2 + ((Math.random() * (N_BLOCKS - 3)) | 0));
+  player.reset(pickRoad(), pickRoad());
+  eatenValue = 0;
+  if (!keepScore) score = 0;
+  snapCamera();
+}
+
 function startGame(m) {
   mode = m;
-  playerName = ($('name').value || '').trim().slice(0, 14) || 'Sen';
-  store.set('name', playerName === 'Sen' ? '' : playerName);
   SFX.unlockAudio();
   try { if (matchMedia('(pointer: coarse)').matches && document.documentElement.requestFullscreen && !document.fullscreenElement) document.documentElement.requestFullscreen({ navigationUI: 'hide' }).catch(() => {}); } catch (e) { /* ignore */ }
 
-  for (const h of holes) h.dispose();
-  holes = [];
-  falling.length = 0;
-  buildWorld((Math.random() * 1e9) | 0);
-
-  const myColor = SKINS[skin];
-  player = new Hole(playerName, myColor, true);
-  holes.push(player);
-  if (mode === 'arena') {
-    const names = BOT_NAMES.slice().sort(() => Math.random() - 0.5);
-    const colors = SKINS.filter(c => c !== myColor).sort(() => Math.random() - 0.5);
-    for (let i = 0; i < BOT_COUNT; i++) holes.push(new Hole(names[i], colors[i % colors.length], false));
-  }
-  // spread spawns around a ring
-  const n = holes.length;
-  const off = Math.random() * Math.PI * 2;
-  holes.forEach((h, i) => {
-    const a = off + (i / n) * Math.PI * 2;
-    const rad = i === 0 && n === 1 ? 0 : SIZE * 0.3;
-    h.reset(Math.cos(a) * rad, Math.sin(a) * rad);
-    h.score = 0;
-  });
-  eatenValue = 0; popupAccum = 0;
+  if (player) { player.dispose(); player = null; }
+  cityNum = 1; citiesDone = 0; elapsed = 0;
+  newCity(false);
+  popupAccum = 0;
   timeLeft = ROUND_TIME;
   lastTick = -1;
+  transition = 0;
   countdown = 3.2;
   state = 'countdown';
   resetInput();
-  $('feed').innerHTML = '';
   show('hud', 'countdown');
-  $('hud').classList.toggle('solo', mode === 'solo');
-  snapCamera();
+  $('hud').classList.toggle('endless', mode === 'endless');
   updateHud();
+}
+
+function cityComplete() {
+  citiesDone++;
+  state = 'transition';
+  transition = 2.2;
+  SFX.sfxEnd();
+  SFX.haptic([40, 40, 80]);
+  banner('ŞEHİR TAMAMLANDI!');
+  resetInput();
 }
 
 function endGame() {
   state = 'over';
   SFX.sfxEnd();
-  const sorted = holes.slice().sort((p, q) => q.score - p.score);
-  const rank = sorted.indexOf(player) + 1;
-  const key = mode === 'arena' ? 'best_arena' : 'best_solo';
+  const key = mode === 'timed' ? 'best_timed' : 'best_endless';
   const best = store.get(key, 0);
-  const isBest = player.score > best;
-  if (isBest) store.set(key, player.score);
-  $('over-title').textContent = mode === 'arena' ? (rank === 1 ? '🏆 Birinci oldun!' : `${rank}. oldun`) : 'Süre doldu!';
-  $('over-score').textContent = player.score;
+  const isBest = score > best;
+  if (isBest) store.set(key, score);
+  const pct = cityPct();
+  $('over-score').textContent = score;
   $('over-best').textContent = isBest ? '🎉 Yeni rekor!' : `Rekor: ${best}`;
-  if (mode === 'arena') {
-    $('over-list').innerHTML = sorted.map((h, i) =>
-      `<li class="${h.isPlayer ? 'me' : ''}"><span class="rk">${i + 1}</span><i style="background:${h.color}"></i><span class="nm">${esc(h.name)}</span><span class="sc">${h.score}</span></li>`).join('');
+  if (mode === 'timed') {
+    const s = starsFor(pct);
+    $('over-title').textContent = s === 3 ? 'Muhteşem!' : s === 2 ? 'Harika!' : s === 1 ? 'Güzel!' : 'Süre doldu!';
+    $('over-list').innerHTML = `<li class="stars">${'★'.repeat(s)}${'☆'.repeat(3 - s)}</li>
+      <li class="solo"><span class="nm">Şehrin <b>%${pct.toFixed(1)}</b>'i yutuldu</span></li>
+      <li class="solo"><span class="nm">Seviye <b>${levelFor(player.mass)}</b></span></li>`;
   } else {
-    const pct = eatenValue / totalValue * 100;
-    const stars = pct >= 20 ? 3 : pct >= 12 ? 2 : pct >= 5 ? 1 : 0;
-    $('over-list').innerHTML = `<li class="me solo"><span class="nm">Şehrin <b>%${pct.toFixed(1)}</b>'i yutuldu</span></li><li class="stars">${'★'.repeat(stars)}${'☆'.repeat(3 - stars)}</li>`;
+    $('over-title').textContent = 'Oyun bitti';
+    $('over-list').innerHTML = `<li class="solo"><span class="nm">Tamamlanan şehir: <b>${citiesDone}</b></span></li>
+      <li class="solo"><span class="nm">Son şehir: <b>%${pct.toFixed(0)}</b> yutuldu</span></li>
+      <li class="solo"><span class="nm">Süre: <b>${fmtTime(elapsed)}</b></span></li>`;
   }
   show('over');
-  for (const h of holes) h.label.style.display = 'none';
 }
 
 function toMenu() {
+  if (mode === 'endless' && player && score > store.get('best_endless', 0)) store.set('best_endless', score);
   state = 'menu';
-  for (const h of holes) h.dispose();
-  holes = []; player = null; falling.length = 0;
+  if (player) { player.dispose(); player = null; }
+  falling.length = 0;
   buildMenu();
   show('menu');
 }
 
 function pauseGame() {
   if (state !== 'play' && state !== 'countdown') return;
+  pausedFrom = state;
   state = 'paused';
   resetInput();
+  $('btn-finish').classList.toggle('hidden', mode !== 'endless');
   show('hud', 'pause');
 }
+let pausedFrom = 'play';
 
 // ---------------------------------------------------------------------------
 // Camera
@@ -803,7 +749,7 @@ function snapCamera() {
   camera.lookAt(camLook);
 }
 function updateCamera(dt) {
-  if (state === 'menu') {
+  if (!player) {
     const t = performance.now() * 0.00005;
     camera.position.set(Math.cos(t) * 95, 75, Math.sin(t) * 95);
     camLook.set(0, 0, 0);
@@ -812,9 +758,11 @@ function updateCamera(dt) {
     return;
   }
   const d = camDist();
-  const k = 1 - Math.exp(-dt * 6);
-  camLook.x += (player.x - camLook.x) * k;
-  camLook.z += (player.z - camLook.z) * k;
+  const k = 1 - Math.exp(-dt * 5);
+  // look a little ahead of the hole so you can see where you're heading
+  const lead = 0.22;
+  camLook.x += (player.x + player.vx * lead - camLook.x) * k;
+  camLook.z += (player.z + player.vz * lead - camLook.z) * k;
   camGoal.set(camLook.x, d * 0.95, camLook.z + d * 0.6);
   camera.position.lerp(camGoal, k);
   camera.lookAt(camLook.x, 0, camLook.z);
@@ -828,6 +776,7 @@ function updateCamera(dt) {
 let last = performance.now();
 let fpsAcc = 0, fpsFrames = 0, slowTime = 0;
 let simulating = false;
+let clock = 0;
 const fpsEl = $('fps');
 const showFps = /fps/.test(location.search);
 if (showFps) fpsEl.classList.remove('hidden');
@@ -837,8 +786,7 @@ function frame(now) {
   let dt = (now - last) / 1000;
   last = now;
   if (dt > 0.1) dt = 0.1;
-  if (dt <= 0) return;
-  if (simulating) return;
+  if (dt <= 0 || simulating) return;
 
   // adaptive resolution: drop pixel ratio if the device can't hold ~50 fps
   fpsAcc += dt; fpsFrames++;
@@ -852,12 +800,12 @@ function frame(now) {
 
   update(dt);
   updateCamera(dt);
-  updateLabels();
   cullAndUpload();
   renderer.render(scene, camera);
 }
 
 function update(dt) {
+  clock += dt;
   if (state !== 'paused' && state !== 'over') {
     for (const o of movers) {
       stepMover(o, dt);
@@ -873,32 +821,23 @@ function update(dt) {
     $('countdown').textContent = n > 0 ? n : 'BAŞLA!';
     if (n !== before && n > 0) SFX.sfxTick(false);
     if (countdown <= -0.4) { state = 'play'; show('hud'); SFX.sfxTick(true); }
-    for (const h of holes) h.sync(dt);
+    player.sync(dt);
   } else if (state === 'play') {
-    timeLeft -= dt;
-    const secs = Math.ceil(timeLeft);
-    if (secs <= 10 && secs !== lastTick && secs > 0) { lastTick = secs; SFX.sfxTick(secs <= 3); }
+    if (mode === 'timed') {
+      timeLeft -= dt;
+      const secs = Math.ceil(timeLeft);
+      if (secs <= 10 && secs !== lastTick && secs > 0) { lastTick = secs; SFX.sfxTick(secs <= 3); }
+    } else elapsed += dt;
     pollKeys();
-    if (player.alive) {
-      const mag = Math.hypot(input.x, input.y);
-      moveHole(player, mag ? input.x / mag : 0, mag ? input.y / mag : 0, mag, dt);
+    const mag = Math.hypot(input.x, input.y);
+    moveHole(player, mag ? input.x / mag : 0, mag ? input.y / mag : 0, Math.min(1, mag), dt);
+    eatCheck(player);
+    player.sync(dt);
+    const lv = levelFor(player.mass);
+    if (lv > player.level) {
+      player.level = lv;
+      SFX.sfxLevel(); banner('SEVİYE ' + lv + '!'); SFX.haptic(25);
     }
-    for (const h of holes) {
-      if (!h.alive) {
-        h.respawn -= dt;
-        if (h.respawn <= 0) { respawnHole(h); if (h.isPlayer) $('eaten').classList.add('hidden'); }
-        continue;
-      }
-      if (!h.isPlayer) updateBot(h, dt);
-      eatCheck(h);
-      h.sync(dt);
-      const lv = levelFor(h.mass);
-      if (lv > h.level) {
-        h.level = lv;
-        if (h.isPlayer) { SFX.sfxLevel(); banner('SEVİYE ' + lv + '!'); SFX.haptic(25); }
-      }
-    }
-    if (holes.length > 1) holeVsHole();
     popupTimer -= dt;
     if (popupAccum > 0 && popupTimer <= 0) {
       const [x, y] = toScreen(player.x, 0, player.z - player.r * 0.3);
@@ -907,10 +846,23 @@ function update(dt) {
     }
     hudTimer -= dt;
     if (hudTimer <= 0) { updateHud(); hudTimer = 0.25; }
-    if (timeLeft <= 0) { updateHud(); endGame(); }
+    if (mode === 'timed' && timeLeft <= 0) { updateHud(); endGame(); }
+    else if (mode === 'endless' && eatenValue >= totalValue * CITY_GOAL) { updateHud(); cityComplete(); }
+  } else if (state === 'transition') {
+    moveHole(player, 0, 0, 0, dt);
+    player.sync(dt);
+    transition -= dt;
+    if (transition <= 0) {
+      cityNum++;
+      newCity(true);
+      countdown = 3.2;
+      state = 'countdown';
+      show('hud', 'countdown');
+      updateHud();
+    }
   }
 
-  if (state !== 'paused') updateFalling(dt);
+  if (player && state !== 'paused') { updateFalling(dt); updateWobble(dt, clock); }
 }
 
 function resize() {
@@ -930,10 +882,12 @@ addEventListener('resize', resize);
 addEventListener('orientationchange', () => setTimeout(resize, 200));
 document.addEventListener('visibilitychange', () => { if (document.hidden) pauseGame(); });
 
-tap($('btn-arena'), () => startGame('arena'));
-tap($('btn-solo'), () => startGame('solo'));
+tap($('btn-timed'), () => startGame('timed'));
+tap($('btn-endless'), () => startGame('endless'));
 tap($('btn-pause'), pauseGame);
-tap($('btn-resume'), () => { state = countdown > 0 ? 'countdown' : 'play'; show('hud'); if (state === 'countdown') $('countdown').classList.remove('hidden'); });
+tap($('btn-resume'), () => { state = pausedFrom; show('hud'); if (state === 'countdown') $('countdown').classList.remove('hidden'); });
+tap($('btn-restart'), () => startGame(mode));
+tap($('btn-finish'), endGame);
 tap($('btn-quit'), toMenu);
 tap($('btn-again'), () => startGame(mode));
 tap($('btn-home'), toMenu);
@@ -949,7 +903,6 @@ tap($('btn-quality'), () => {
   resize();
   $('btn-quality').textContent = '⚙️ ' + QUALITY[quality].name;
 });
-$('name').addEventListener('keydown', e => { if (e.key === 'Enter') e.target.blur(); });
 
 buildWorld((Math.random() * 1e9) | 0);
 buildMenu();
@@ -958,16 +911,38 @@ show('menu');
 requestAnimationFrame(t => { last = t; frame(t); });
 $('loading').classList.add('hidden');
 
-// Test hook (?debug): fast-forward the simulation without rendering.
+// Test hook (?debug): fast-forward the simulation without rendering, with a
+// simple autopilot standing in for a player.
 if (/debug/.test(location.search)) {
+  const autopilot = () => {
+    const h = player, lim = h.r * 0.95, R = 24;
+    let best = null, bestS = 0;
+    for (let cz = 0; cz < GRID_N; cz++) for (let cx = 0; cx < GRID_N; cx++) {
+      const cell = grid[cz * GRID_N + cx];
+      let sum = 0, item = null;
+      for (const o of cell) if (o.fit < lim) { sum += o.value; item = o; }
+      if (!item) continue;
+      const d = Math.hypot(item.x - h.x, item.z - h.z);
+      if (d > R * 3) continue;
+      const s = sum / (d + 6);
+      if (s > bestS) { bestS = s; best = item; }
+    }
+    if (!best) { input.x = -h.x / HALF; input.y = -h.z / HALF; return; }
+    const dx = best.x - h.x, dz = best.z - h.z, d = Math.hypot(dx, dz) || 1;
+    input.x = dx / d; input.y = dz / d;
+  };
   window.__od = {
-    startGame, get holes() { return holes; }, get state() { return state; }, input,
-    breakdown() { const r = {}; for (const [k, p] of Object.entries(pools)) r[k] = [p.mesh.count, p.n, p.mesh.count * p.mesh.geometry.attributes.position.count]; return r; },
-    stats() { let v = 0, all = 0; for (const p of Object.values(pools)) { v += p.mesh.count * p.mesh.geometry.attributes.position.count; all += p.n * p.mesh.geometry.attributes.position.count; } return { objects: objects.length, movers: movers.length, visibleVerts: v, allVerts: all, draws: Object.keys(pools).length }; },
-    sim(seconds, step = 1 / 60) {
+    startGame, input, get state() { return state; }, get player() { return player; }, get falling() { return falling; },
+    get pct() { return cityPct(); }, get score() { return score; }, get city() { return cityNum; },
+    sim(seconds, auto = false, step = 1 / 60) {
       simulating = true;
       const t0 = performance.now();
-      for (let t = 0; t < seconds && state !== 'over'; t += step) update(step);
+      let think = 0;
+      for (let t = 0; t < seconds && state !== 'over'; t += step) {
+        if (auto && state === 'play' && (think -= step) <= 0) { autopilot(); input.active = true; think = 0.3; }
+        update(step);
+      }
+      if (auto) { input.active = false; input.x = input.y = 0; }
       simulating = false;
       return performance.now() - t0;
     },

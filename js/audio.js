@@ -44,13 +44,29 @@ export function sfxEat(size) {
   if (size > 2.5) tone(base * 0.5, 40, 0.35, 'sine', 0.3);
 }
 
-export function sfxLevel() {
-  [523, 659, 784, 1046].forEach((f, i) => tone(f, f * 1.01, 0.16, 'square', 0.08, i * 0.07));
+// low thump when something big hits the bottom of the hole
+let lastThud = 0;
+export function sfxThud(size) {
+  if (!ctx) return;
+  const now = performance.now();
+  if (now - lastThud < 90) return;
+  lastThud = now;
+  const v = Math.min(0.35, 0.1 + size * 0.04);
+  tone(110 / (1 + size * 0.1), 30, 0.35 + Math.min(0.3, size * 0.04), 'sine', v);
 }
 
-export function sfxGulpHole() {
-  tone(300, 50, 0.5, 'sawtooth', 0.15);
-  tone(150, 30, 0.6, 'sine', 0.35);
+// knock against the hole's wall
+let lastBump = 0;
+export function sfxBump(size) {
+  if (!ctx) return;
+  const now = performance.now();
+  if (now - lastBump < 70) return;
+  lastBump = now;
+  tone(260 / (1 + size * 0.15), 90, 0.09, 'triangle', 0.08);
+}
+
+export function sfxLevel() {
+  [523, 659, 784, 1046].forEach((f, i) => tone(f, f * 1.01, 0.16, 'square', 0.08, i * 0.07));
 }
 
 export function sfxTick(high) { tone(high ? 1200 : 800, high ? 1200 : 800, 0.06, 'square', 0.06); }

@@ -1,5 +1,5 @@
 // Offline cache: the whole game is static, so cache-first with a versioned bucket.
-const CACHE = 'obur-delik-v1';
+const CACHE = 'obur-delik-v2';
 const FILES = [
   './', './index.html', './manifest.webmanifest', './css/style.css',
   './js/main.js', './js/assets.js', './js/world.js', './js/audio.js', './js/input.js',
