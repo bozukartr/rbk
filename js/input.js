@@ -2,7 +2,7 @@
 // Exposes input.x / input.y in [-1, 1] (screen space, y down) and input.active.
 export const input = { x: 0, y: 0, active: false };
 
-const RADIUS = 64;
+const RADIUS = 56;
 let pointerId = null, ox = 0, oy = 0;
 let base, knob, zone;
 const keys = new Set();
@@ -34,8 +34,10 @@ export function initInput(zoneEl, baseEl, knobEl) {
       base.style.transform = `translate3d(${ox}px, ${oy}px, 0)`;
     }
     const l2 = Math.hypot(dx, dy);
-    const dead = 6;
-    const mag = l2 < dead ? 0 : Math.min(1, (l2 - dead) / (RADIUS * 0.7 - dead));
+    // full speed after a short drag; ease-in curve keeps small corrections precise
+    const dead = 4;
+    const lin = l2 < dead ? 0 : Math.min(1, (l2 - dead) / (RADIUS * 0.5 - dead));
+    const mag = lin * (0.35 + 0.65 * lin);
     input.x = l2 ? (dx / l2) * mag : 0;
     input.y = l2 ? (dy / l2) * mag : 0;
     knob.style.transform = `translate3d(${ox + dx}px, ${oy + dy}px, 0)`;

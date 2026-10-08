@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content">
   <title>Obur Delik</title>
-  <meta name="description" content="Obur Delik: şehri yut, büyü, rakip delikleri yut! Mobil için tasarlanmış 3D web oyunu.">
+  <meta name="description" content="Obur Delik: şehri yut, büyü, her şeyi deliğe çek! Mobil için tasarlanmış 3D web oyunu.">
   <meta name="theme-color" content="#0b1020">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -39,21 +39,15 @@
       </div>
       <button class="icon-btn" id="btn-pause" aria-label="Duraklat">❚❚</button>
     </div>
-    <ol id="board"></ol>
-    <div id="feed"></div>
+    <div id="progress">
+      <div class="prog-row"><span id="prog-label">Şehir %0</span><span id="prog-stars">☆☆☆</span></div>
+      <div class="prog-track"><div id="prog-bar"></div><i style="left:26.7%"></i><i style="left:60%"></i></div>
+    </div>
     <div id="banner"></div>
     <div class="hint">Ekranın herhangi bir yerine dokun ve sürükle</div>
   </div>
 
   <div id="countdown" class="hidden">3</div>
-
-  <div id="eaten" class="hidden">
-    <div class="card small">
-      <div class="big-emoji">😵</div>
-      <h2>Yutuldun!</h2>
-      <p><b id="eaten-by"></b> seni yuttu. Birazdan yeniden doğacaksın…</p>
-    </div>
-  </div>
 
   <!-- Main menu -->
   <div id="menu" class="screen hidden">
@@ -62,13 +56,12 @@
         <div class="logo-hole"></div>
         <h1>OBUR<span>DELİK</span></h1>
       </div>
-      <input id="name" type="text" maxlength="14" placeholder="Adın" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="done">
       <div id="skins"></div>
-      <button class="btn primary" id="btn-arena">⚔️ ARENA<small>8 delik · 2 dakika · rakipleri de yut</small></button>
-      <button class="btn" id="btn-solo">🏙️ SOLO<small>Şehrin ne kadarını yutabilirsin?</small></button>
+      <button class="btn primary" id="btn-timed">⏱️ SÜRELİ<small>2 dakikada şehrin ne kadarını yutabilirsin?</small></button>
+      <button class="btn" id="btn-endless">♾️ SONSUZ<small>Acele yok · şehri bitir, sıradakine geç</small></button>
       <div class="bests">
-        <div>Arena rekoru <b id="best-arena">0</b></div>
-        <div>Solo rekoru <b id="best-solo">0</b></div>
+        <div>Süreli rekor <b id="best-timed">0</b></div>
+        <div>Sonsuz rekor <b id="best-endless">0</b></div>
       </div>
       <div class="menu-row">
         <button class="icon-btn" id="btn-sound" aria-label="Ses">🔊</button>
@@ -81,6 +74,8 @@
     <div class="card">
       <h2>Duraklatıldı</h2>
       <button class="btn primary" id="btn-resume">▶ Devam</button>
+      <button class="btn" id="btn-finish">🏁 Bitir ve kaydet</button>
+      <button class="btn" id="btn-restart">↻ Yeniden başla</button>
       <button class="btn" id="btn-quit">Ana menü</button>
     </div>
   </div>
