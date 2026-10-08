@@ -1,102 +1,104 @@
 <!DOCTYPE html>
 <html lang="tr">
-
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Game Hub - Benim Oyunlarım</title>
-    <meta name="description"
-        content="bozukartr'nin geliştirmiş olduğu web tabanlı oyunlar: Chroma, Quoridor ve Kelime Oyunu.">
-
-    <!-- Open Graph / Facebook -->
-    <meta property="og:type" content="website">
-    <meta property="og:url" content="https://bozukartr.github.io/">
-    <meta property="og:title" content="Game Hub - Benim Oyunlarım">
-    <meta property="og:description" content="Tüm strateji ve zeka oyunlarım tek bir yerde. Oynamak için tıkla.">
-    <meta property="og:image" content="assets/chroma_logo.png">
-
-    <!-- Twitter -->
-    <meta property="twitter:card" content="summary_large_image">
-    <meta property="twitter:title" content="Game Hub - Benim Oyunlarım">
-    <meta property="twitter:description" content="Tüm strateji ve zeka oyunlarım tek bir yerde.">
-
-    <!-- Favicon -->
-    <link rel="icon"
-        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎮</text></svg>">
-    <meta name="description" content="Web tabanlı oyunlarımın koleksiyonu.">
-
-    <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap" rel="stylesheet">
-
-    <!-- PWA -->
-    <link rel="manifest" href="manifest.json">
-    <meta name="theme-color" content="#0f172a">
-    <link rel="apple-touch-icon" href="assets/icon-192.png">
-
-    <!-- Styles -->
-    <link rel="stylesheet" href="style.css">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content">
+  <title>Obur Delik</title>
+  <meta name="description" content="Obur Delik: şehri yut, büyü, rakip delikleri yut! Mobil için tasarlanmış 3D web oyunu.">
+  <meta name="theme-color" content="#0b1020">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Obur Delik">
+  <meta name="format-detection" content="telephone=no">
+  <meta name="msapplication-tap-highlight" content="no">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="importmap">{ "imports": { "three": "./lib/three.module.min.js" } }</script>
 </head>
-
 <body>
+  <canvas id="game"></canvas>
 
-    <div class="noise-overlay"></div>
-    <div class="background-blobs">
-        <div class="blob blob-1"></div>
-        <div class="blob blob-2"></div>
-        <div class="blob blob-3"></div>
+  <!-- touch surface for the floating joystick -->
+  <div id="touch"></div>
+  <div id="joy-base"></div>
+  <div id="joy-knob"></div>
+
+  <div id="labels"></div>
+  <div id="fps" class="hidden"></div>
+
+  <!-- HUD -->
+  <div id="hud" class="hidden">
+    <div class="hud-top">
+      <div class="pill" id="timer">2:00</div>
+      <div class="scorebox">
+        <div id="score">0</div>
+        <div class="lvwrap"><span id="level">Lv 1</span><div class="lvtrack"><div id="lvbar"></div></div></div>
+      </div>
+      <button class="icon-btn" id="btn-pause" aria-label="Duraklat">❚❚</button>
     </div>
+    <ol id="board"></ol>
+    <div id="feed"></div>
+    <div id="banner"></div>
+    <div class="hint">Ekranın herhangi bir yerine dokun ve sürükle</div>
+  </div>
 
-    <main class="hub-container">
-        <header class="hub-header">
-            <h1>Game Hub</h1>
-            <p>Tüm oyunlarım tek bir yerde.</p>
-        </header>
+  <div id="countdown" class="hidden">3</div>
 
-        <div class="app-grid">
+  <div id="eaten" class="hidden">
+    <div class="card small">
+      <div class="big-emoji">😵</div>
+      <h2>Yutuldun!</h2>
+      <p><b id="eaten-by"></b> seni yuttu. Birazdan yeniden doğacaksın…</p>
+    </div>
+  </div>
 
-            <!-- Game 1: Chroma -->
-            <a href="https://bozukartr.github.io/chroma/" class="app-card" target="_blank">
-                <div class="badge-new">YENİ</div>
-                <div class="app-icon" id="chroma-icon">
-                    <img src="assets/chroma_logo.png" alt="Chroma Logo"
-                        onerror="this.onerror=null; this.src='https://placehold.co/100x100/252525/FFF?text=C';">
-                </div>
-                <div class="app-info">
-                    <h2>Chroma</h2>
-                    <span class="app-category">Strateji</span>
-                </div>
-            </a>
+  <!-- Main menu -->
+  <div id="menu" class="screen hidden">
+    <div class="menu-inner">
+      <div class="logo">
+        <div class="logo-hole"></div>
+        <h1>OBUR<span>DELİK</span></h1>
+      </div>
+      <input id="name" type="text" maxlength="14" placeholder="Adın" autocomplete="off" autocorrect="off" spellcheck="false" enterkeyhint="done">
+      <div id="skins"></div>
+      <button class="btn primary" id="btn-arena">⚔️ ARENA<small>8 delik · 2 dakika · rakipleri de yut</small></button>
+      <button class="btn" id="btn-solo">🏙️ SOLO<small>Şehrin ne kadarını yutabilirsin?</small></button>
+      <div class="bests">
+        <div>Arena rekoru <b id="best-arena">0</b></div>
+        <div>Solo rekoru <b id="best-solo">0</b></div>
+      </div>
+      <div class="menu-row">
+        <button class="icon-btn" id="btn-sound" aria-label="Ses">🔊</button>
+        <button class="btn chip" id="btn-quality">⚙️ Orta</button>
+      </div>
+    </div>
+  </div>
 
-            <!-- Game 2: Quoridor -->
-            <a href="https://bozukartr.github.io/quoridor/" class="app-card" target="_blank">
-                <div class="app-icon" id="quoridor-icon">
-                    <img src="assets/quoridor_logo.png" alt="Quoridor Logo"
-                        onerror="this.onerror=null; this.src='https://placehold.co/100x100/252525/FFF?text=Q';">
-                </div>
-                <div class="app-info">
-                    <h2>Quoridor</h2>
-                    <span class="app-category">Masa Oyunu</span>
-                </div>
-            </a>
+  <div id="pause" class="screen dim hidden">
+    <div class="card">
+      <h2>Duraklatıldı</h2>
+      <button class="btn primary" id="btn-resume">▶ Devam</button>
+      <button class="btn" id="btn-quit">Ana menü</button>
+    </div>
+  </div>
 
-            <!-- Game 3: Wordl Online -->
-            <a href="https://bozukartr.github.io/onlinekelime/" class="app-card" target="_blank">
-                <div class="app-icon" id="wordl-icon">
-                    <img src="assets/onlinekelime_logo.png" alt="Wordl Online Logo"
-                        onerror="this.onerror=null; this.src='https://placehold.co/100x100/252525/FFF?text=W';">
-                </div>
-                <div class="app-info">
-                    <h2>Wordl Online</h2>
-                    <span class="app-category">Kelime</span>
-                </div>
-            </a>
+  <div id="over" class="screen dim hidden">
+    <div class="card">
+      <h2 id="over-title">Süre doldu!</h2>
+      <div class="over-score" id="over-score">0</div>
+      <div class="over-best" id="over-best"></div>
+      <ol id="over-list" class="scroll"></ol>
+      <button class="btn primary" id="btn-again">↻ Tekrar oyna</button>
+      <button class="btn" id="btn-home">Ana menü</button>
+    </div>
+  </div>
 
-        </div>
-    </main>
+  <div id="loading"><div class="logo-hole spin"></div></div>
 
-    <script src="script.js"></script>
+  <noscript><p style="color:#fff;padding:20px">Bu oyun için JavaScript gerekli.</p></noscript>
+  <script type="module" src="js/main.js"></script>
 </body>
-
 </html>

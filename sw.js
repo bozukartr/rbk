@@ -1,46 +1,23 @@
-const CACHE_NAME = 'game-hub-v1';
-const ASSETS_TO_CACHE = [
-    './',
-    './index.html',
-    './style.css',
-    './script.js',
-    './assets/chroma_logo.png',
-    './assets/quoridor_logo.png',
-    './assets/onlinekelime_logo.png'
+// Offline cache: the whole game is static, so cache-first with a versioned bucket.
+const CACHE = 'obur-delik-v1';
+const FILES = [
+  './', './index.html', './manifest.webmanifest', './css/style.css',
+  './js/main.js', './js/assets.js', './js/world.js', './js/audio.js', './js/input.js',
+  './lib/three.module.min.js',
+  './icons/icon-192.png', './icons/icon-512.png', './icons/icon-maskable-512.png', './icons/apple-touch-icon.png',
 ];
 
-self.addEventListener('install', (event) => {
-    event.waitUntil(
-        caches.open(CACHE_NAME)
-            .then((cache) => {
-                console.log('[Service Worker] Caching all: app shell and content');
-                return cache.addAll(ASSETS_TO_CACHE);
-            })
-    );
+self.addEventListener('install', e => {
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(FILES)).then(() => self.skipWaiting()));
 });
 
-self.addEventListener('fetch', (event) => {
-    event.respondWith(
-        caches.match(event.request)
-            .then((response) => {
-                // Cache hit - return response
-                if (response) {
-                    return response;
-                }
-                return fetch(event.request);
-            })
-    );
+self.addEventListener('activate', e => {
+  e.waitUntil(caches.keys()
+    .then(keys => Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k))))
+    .then(() => self.clients.claim()));
 });
 
-self.addEventListener('activate', (event) => {
-    event.waitUntil(
-        caches.keys().then((keyList) => {
-            return Promise.all(keyList.map((key) => {
-                if (key !== CACHE_NAME) {
-                    console.log('[Service Worker] Removing old cache', key);
-                    return caches.delete(key);
-                }
-            }));
-        })
-    );
+self.addEventListener('fetch', e => {
+  if (e.request.method !== 'GET') return;
+  e.respondWith(caches.match(e.request, { ignoreSearch: true }).then(hit => hit || fetch(e.request)));
 });
